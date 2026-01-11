@@ -243,3 +243,87 @@ def resolve_author_by_name_and_institution(
 #     else:
 #         print("Match found:")
 #         print(result)
+
+
+def _normalize_author_id(author_id: str) -> str:
+    """
+    Accepts:
+      - "A5024763828"
+      - "https://openalex.org/A5024763828"
+    Returns:
+      - "A5024763828"
+    """
+    if not isinstance(author_id, str):
+        raise TypeError("author_id must be a string")
+    s = author_id.strip()
+    if not s:
+        raise ValueError("author_id is empty")
+    return s.replace("https://openalex.org/", "")
+
+
+def list_all_publications(author_id: str, per_page: int = 200, n_max=None):
+    """
+    List ALL publications (OpenAlex Works objects) for the given author,
+    ordered from oldest to newest (front to back).
+
+    n_max:
+      - None => fetch all
+      - int  => fetch up to n_max works
+    """
+    aid = _normalize_author_id(author_id)
+
+    query = (
+        Works()
+        .filter(author={"id": aid})
+        .sort(publication_date="asc")  # from old -> new
+    )
+
+    # paginate returns pages (lists of works)
+    for page in query.paginate(per_page=per_page, n_max=n_max):
+        for w in page:
+            yield w
+
+
+def get_author_citation_history(author_id: str):
+    """
+    Fetch author-level citation history from OpenAlex.
+
+    Input:
+      author_id: either "A...." or full URL "https://openalex.org/A...."
+
+    Output:
+      dict with:
+        - author_id (full OpenAlex URL)
+        - display_name
+        - orcid
+        - works_count
+        - cited_by_count (total)
+        - counts_by_year (list of {"year": int, "cited_by_count": int}) sorted by year asc
+    """
+    if not isinstance(author_id, str) or not author_id.strip():
+        raise ValueError("author_id must be a non-empty string")
+
+    aid = author_id.strip()
+    if aid.startswith("https://openalex.org/"):
+        aid = aid.replace("https://openalex.org/", "")
+
+    a = Authors()[aid]  # fetch full author record
+
+    counts_by_year = a.get("counts_by_year") or []
+    # normalize + sort
+    norm = []
+    for row in counts_by_year:
+        y = row.get("year")
+        c = row.get("cited_by_count")
+        if isinstance(y, int) and isinstance(c, int):
+            norm.append({"year": y, "cited_by_count": c})
+    norm.sort(key=lambda x: x["year"])
+
+    return {
+        "author_id": a.get("id"),
+        "display_name": a.get("display_name"),
+        "orcid": a.get("orcid"),
+        "works_count": a.get("works_count"),
+        "cited_by_count": a.get("cited_by_count"),
+        "counts_by_year": norm,
+    }
