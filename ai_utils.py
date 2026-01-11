@@ -109,7 +109,3 @@ def same_university(univ_a: str, univ_b: str) -> int:
     return int(first)
 
 
-if __name__ == "__main__":
-    a = "King Abdullah University of Science and Technology"
-    b = "KAUST"
-    print(same_university(a, b))  # expected 1

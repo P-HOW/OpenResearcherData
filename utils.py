@@ -1,0 +1,245 @@
+import pyalex
+from pyalex import Authors, Works
+from collections import Counter
+
+pyalex.config.email = "peihaoli1014@example.com"
+
+# If you put same_university() in another file, import it like:
+# from ai_utils import same_university
+# For this example, we assume same_university is available in scope.
+try:
+    from ai_utils import same_university
+except Exception:
+    same_university = None  # allows running without LLM, only exact matching
+
+
+def pick_main_institution(insts):
+    if not insts:
+        return None
+    if len(insts) == 1:
+        return insts[0]
+
+    edu = [i for i in insts if i.get("type") == "education"]
+    if edu:
+        return edu[0]
+
+    return insts[0]
+
+
+def extract_target_authorship(work, author_id):
+    target_full = f"https://openalex.org/{author_id}"
+    for au in (work.get("authorships") or []):
+        au_id = (au.get("author") or {}).get("id") or ""
+        if au_id == target_full or au_id.endswith(author_id):
+            return au
+    return None
+
+
+def select_best_institution(inst_counter, inst_by_id):
+    if not inst_counter:
+        return None
+
+    top_count = inst_counter.most_common(1)[0][1]
+    top_ids = [iid for iid, c in inst_counter.items() if c == top_count]
+
+    edu_ids = [
+        iid for iid in top_ids if (inst_by_id.get(iid) or {}).get("type") == "education"
+    ]
+    chosen_id = sorted(edu_ids)[0] if edu_ids else sorted(top_ids)[0]
+
+    return inst_by_id.get(chosen_id)
+
+
+def majority_institution_last_years(author_id, years_window=2, max_works_to_scan=500):
+    query = (
+        Works()
+        .filter(author={"id": author_id})
+        .sort(publication_date="desc")
+        .select(["id", "publication_year", "publication_date", "authorships"])
+    )
+
+    inst_counter = Counter()
+    inst_by_id = {}
+    latest_year = None
+
+    for page in query.paginate(per_page=200, n_max=max_works_to_scan):
+        for w in page:
+            y = w.get("publication_year")
+            if not y:
+                continue
+
+            if latest_year is None:
+                latest_year = y
+
+            if y < latest_year - (years_window - 1):
+                best = select_best_institution(inst_counter, inst_by_id)
+                return best, latest_year
+
+            au = extract_target_authorship(w, author_id)
+            if not au:
+                continue
+
+            insts = au.get("institutions") or []
+            for inst in insts:
+                inst_id = inst.get("id")
+                if not inst_id:
+                    continue
+                inst_counter[inst_id] += 1
+                inst_by_id[inst_id] = inst
+
+    best = select_best_institution(inst_counter, inst_by_id)
+    return best, latest_year
+
+
+def latest_main_institution(author_id, fallback_years_window=2):
+    works = (
+        Works()
+        .filter(author={"id": author_id})
+        .sort(publication_date="desc")
+        .select(["id", "publication_date", "publication_year", "authorships"])
+        .get()
+    )
+
+    if not works:
+        return None, None, "no_works"
+
+    w = works[0]
+    work_date = w.get("publication_date") or str(w.get("publication_year") or "")
+
+    au = extract_target_authorship(w, author_id)
+    if au:
+        insts = au.get("institutions") or []
+        inst = pick_main_institution(insts)
+        if inst:
+            return inst, work_date, "most_recent_work"
+
+    inst2, latest_year = majority_institution_last_years(
+        author_id, years_window=fallback_years_window
+    )
+    if inst2:
+        if latest_year is not None and fallback_years_window == 2:
+            ref = f"{latest_year} and {latest_year - 1}"
+        elif latest_year is not None:
+            ref = str(latest_year)
+        else:
+            ref = None
+        return inst2, ref, "majority_last_years"
+
+    return None, work_date, "none"
+
+
+def normalize_text(s):
+    return (s or "").strip().lower()
+
+
+def institution_matches(user_inst, found_inst):
+    u = normalize_text(user_inst)
+    if not u:
+        return False
+
+    inst_id = (found_inst.get("id") or "")
+    inst_ror = (found_inst.get("ror") or "")
+    inst_name = normalize_text(found_inst.get("display_name") or "")
+
+    u_no_prefix = u.replace("https://openalex.org/", "")
+
+    if u == normalize_text(inst_id) or u_no_prefix == normalize_text(inst_id).replace("https://openalex.org/", ""):
+        return True
+    if u == normalize_text(inst_ror):
+        return True
+
+    return (u in inst_name) or (inst_name in u)
+
+
+def institution_matches_vague(user_inst, found_inst):
+    """
+    Vague matching:
+      - First try basic string matching (institution_matches)
+      - If mismatch, call same_university(user_inst, found_name) to double-check.
+    Returns True/False.
+    """
+    if institution_matches(user_inst, found_inst):
+        return True
+
+    if same_university is None:
+        return False
+
+    found_name = found_inst.get("display_name") or ""
+    try:
+        return same_university(user_inst, found_name) == 1
+    except Exception:
+        return False
+
+
+def resolve_author_by_name_and_institution(
+    author_name,
+    institution_input,
+    fallback_years_window=2,
+    vague=True,
+):
+    """
+    Input: author_name (str), institution_input (str)
+    Output: dict with author info if match found, else None
+
+    If vague=True (default):
+      - if exact/substring match fails, call same_university(institution_input, latest_inst_name)
+        to double-check.
+    """
+    cands = Authors().search(author_name).get()
+
+    for cand in cands:
+        author_id = (cand.get("id") or "").replace("https://openalex.org/", "")
+        if not author_id:
+            continue
+
+        a = Authors()[author_id]
+
+        inst, when, method = latest_main_institution(
+            author_id, fallback_years_window=fallback_years_window
+        )
+        if not inst:
+            continue
+
+        matched = (
+            institution_matches_vague(institution_input, inst)
+            if vague
+            else institution_matches(institution_input, inst)
+        )
+
+        if matched:
+            return {
+                "author_id": a.get("id"),
+                "display_name": a.get("display_name"),
+                "orcid": a.get("orcid"),
+                "works_count": a.get("works_count"),
+                "cited_by_count": a.get("cited_by_count"),
+                "latest_main_institution": {
+                    "id": inst.get("id"),
+                    "display_name": inst.get("display_name"),
+                    "ror": inst.get("ror"),
+                    "country_code": inst.get("country_code"),
+                    "type": inst.get("type"),
+                },
+                "reference_time": when,
+                "institution_method": method,
+                "matched_via": "vague_llm" if vague and not institution_matches(institution_input, inst) else "direct",
+            }
+
+    return None
+
+# if __name__ == "__main__":
+#     name = "bernard ghanem"
+#     inst = "KAUST"  # vague user input
+#
+#     result = resolve_author_by_name_and_institution(
+#         name,
+#         inst,
+#         fallback_years_window=2,
+#         vague=True,  # default True
+#     )
+#
+#     if result is None:
+#         print("No match found.")
+#     else:
+#         print("Match found:")
+#         print(result)
