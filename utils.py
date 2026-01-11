@@ -327,3 +327,268 @@ def get_author_citation_history(author_id: str):
         "cited_by_count": a.get("cited_by_count"),
         "counts_by_year": norm,
     }
+
+def _normalize_author_id(author_id: str) -> str:
+    """
+    Accepts:
+      - "A123..."
+      - "https://openalex.org/A123..."
+    Returns:
+      - "A123..."
+    """
+    if not isinstance(author_id, str) or not author_id.strip():
+        raise ValueError("author_id must be a non-empty string")
+
+    aid = author_id.strip()
+    if aid.startswith("https://openalex.org/"):
+        aid = aid.replace("https://openalex.org/", "")
+    return aid
+
+
+def get_author_citation_history_from_publications(
+    author_id: str,
+    max_works_to_scan: int = 20000,
+    per_page: int = 200,
+):
+    """
+    Publication-oriented citation aggregation:
+      - Sum cited_by_count across all works by the author
+      - Aggregate counts_by_year across all works (when available)
+
+    Notes / limitations:
+      - Some Works do NOT include counts_by_year. Those citations will contribute to the total
+        cited_by_count, but cannot be assigned to specific years. We'll report them as "unassigned".
+      - For Works that have counts_by_year, the sum of their yearly counts may not always equal
+        cited_by_count (data updates / indexing differences). We'll report a consistency check.
+
+    Input:
+      author_id: "A...." or "https://openalex.org/A...."
+
+    Output dict:
+      {
+        "author_id": "https://openalex.org/A...." (normalized full URL),
+        "works_scanned": int,
+        "works_with_yearly_breakdown": int,
+        "works_missing_yearly_breakdown": int,
+
+        "cited_by_count_sum": int,              # sum of works' cited_by_count
+        "counts_by_year_sum": [                # year-aggregated from works counts_by_year
+           {"year": 2018, "cited_by_count": 123},
+           ...
+        ],
+
+        "yearly_citations_sum": int,            # sum over counts_by_year_sum
+        "unassigned_citations_estimate": int,   # cited_by_count_sum - yearly_citations_sum (>=0 in normal cases)
+        "consistency": {
+            "works_where_sum_yearly_gt_total": int,
+            "works_where_sum_yearly_lt_total": int,
+            "works_where_sum_yearly_eq_total": int,
+        },
+      }
+    """
+    aid = _normalize_author_id(author_id)
+    full_author_url = f"https://openalex.org/{aid}"
+
+    year_counter = Counter()
+
+    works_scanned = 0
+    works_with_yearly = 0
+    works_missing_yearly = 0
+
+    cited_by_count_sum = 0
+    yearly_citations_sum_per_work_stats = {
+        "works_where_sum_yearly_gt_total": 0,
+        "works_where_sum_yearly_lt_total": 0,
+        "works_where_sum_yearly_eq_total": 0,
+    }
+
+    query = (
+        Works()
+        .filter(author={"id": aid})
+        .select(["id", "cited_by_count", "counts_by_year"])  # keep payload small
+    )
+
+    # Paginate through (potentially) all works
+    for page in query.paginate(per_page=per_page, n_max=max_works_to_scan):
+        for w in page:
+            works_scanned += 1
+
+            # 1) total citations (per work)
+            c_total = w.get("cited_by_count")
+            if isinstance(c_total, int) and c_total >= 0:
+                cited_by_count_sum += c_total
+            else:
+                c_total = 0  # treat missing/invalid as 0
+
+            # 2) yearly citations (per work, if present)
+            cby = w.get("counts_by_year") or []
+            if not cby:
+                works_missing_yearly += 1
+                continue
+
+            works_with_yearly += 1
+            sum_yearly_for_work = 0
+
+            for row in cby:
+                y = row.get("year")
+                c = row.get("cited_by_count")
+                if isinstance(y, int) and isinstance(c, int) and c >= 0:
+                    year_counter[y] += c
+                    sum_yearly_for_work += c
+
+            # Consistency check vs cited_by_count
+            if sum_yearly_for_work > c_total:
+                yearly_citations_sum_per_work_stats["works_where_sum_yearly_gt_total"] += 1
+            elif sum_yearly_for_work < c_total:
+                yearly_citations_sum_per_work_stats["works_where_sum_yearly_lt_total"] += 1
+            else:
+                yearly_citations_sum_per_work_stats["works_where_sum_yearly_eq_total"] += 1
+
+    # Build sorted history
+    counts_by_year_sum = [
+        {"year": y, "cited_by_count": year_counter[y]} for y in sorted(year_counter.keys())
+    ]
+    yearly_citations_sum = sum(year_counter.values())
+
+    # "Unassigned" are citations from works that lack yearly breakdown (and/or mismatches)
+    unassigned = cited_by_count_sum - yearly_citations_sum
+    if unassigned < 0:
+        # Data inconsistencies can lead to negative; clamp and still report.
+        unassigned = 0
+
+    return {
+        "author_id": full_author_url,
+        "works_scanned": works_scanned,
+        "works_with_yearly_breakdown": works_with_yearly,
+        "works_missing_yearly_breakdown": works_missing_yearly,
+        "cited_by_count_sum": cited_by_count_sum,
+        "counts_by_year_sum": counts_by_year_sum,
+        "yearly_citations_sum": yearly_citations_sum,
+        "unassigned_citations_estimate": unassigned,
+        "consistency": yearly_citations_sum_per_work_stats,
+    }
+
+
+
+def get_author_citation_history_from_publications(
+    author_id: str,
+    max_works_to_scan: int = 20000,
+    per_page: int = 200,
+):
+    """
+    Publication-oriented citation aggregation:
+      - Sum cited_by_count across all works by the author
+      - Aggregate counts_by_year across all works (when available)
+
+    Notes / limitations:
+      - Some Works do NOT include counts_by_year. Those citations will contribute to the total
+        cited_by_count, but cannot be assigned to specific years. We'll report them as "unassigned".
+      - For Works that have counts_by_year, the sum of their yearly counts may not always equal
+        cited_by_count (data updates / indexing differences). We'll report a consistency check.
+
+    Input:
+      author_id: "A...." or "https://openalex.org/A...."
+
+    Output dict:
+      {
+        "author_id": "https://openalex.org/A...." (normalized full URL),
+        "works_scanned": int,
+        "works_with_yearly_breakdown": int,
+        "works_missing_yearly_breakdown": int,
+
+        "cited_by_count_sum": int,              # sum of works' cited_by_count
+        "counts_by_year_sum": [                # year-aggregated from works counts_by_year
+           {"year": 2018, "cited_by_count": 123},
+           ...
+        ],
+
+        "yearly_citations_sum": int,            # sum over counts_by_year_sum
+        "unassigned_citations_estimate": int,   # cited_by_count_sum - yearly_citations_sum (>=0 in normal cases)
+        "consistency": {
+            "works_where_sum_yearly_gt_total": int,
+            "works_where_sum_yearly_lt_total": int,
+            "works_where_sum_yearly_eq_total": int,
+        },
+      }
+    """
+    aid = _normalize_author_id(author_id)
+    full_author_url = f"https://openalex.org/{aid}"
+
+    year_counter = Counter()
+
+    works_scanned = 0
+    works_with_yearly = 0
+    works_missing_yearly = 0
+
+    cited_by_count_sum = 0
+    yearly_citations_sum_per_work_stats = {
+        "works_where_sum_yearly_gt_total": 0,
+        "works_where_sum_yearly_lt_total": 0,
+        "works_where_sum_yearly_eq_total": 0,
+    }
+
+    query = (
+        Works()
+        .filter(author={"id": aid})
+        .select(["id", "cited_by_count", "counts_by_year"])  # keep payload small
+    )
+
+    # Paginate through (potentially) all works
+    for page in query.paginate(per_page=per_page, n_max=max_works_to_scan):
+        for w in page:
+            works_scanned += 1
+
+            # 1) total citations (per work)
+            c_total = w.get("cited_by_count")
+            if isinstance(c_total, int) and c_total >= 0:
+                cited_by_count_sum += c_total
+            else:
+                c_total = 0  # treat missing/invalid as 0
+
+            # 2) yearly citations (per work, if present)
+            cby = w.get("counts_by_year") or []
+            if not cby:
+                works_missing_yearly += 1
+                continue
+
+            works_with_yearly += 1
+            sum_yearly_for_work = 0
+
+            for row in cby:
+                y = row.get("year")
+                c = row.get("cited_by_count")
+                if isinstance(y, int) and isinstance(c, int) and c >= 0:
+                    year_counter[y] += c
+                    sum_yearly_for_work += c
+
+            # Consistency check vs cited_by_count
+            if sum_yearly_for_work > c_total:
+                yearly_citations_sum_per_work_stats["works_where_sum_yearly_gt_total"] += 1
+            elif sum_yearly_for_work < c_total:
+                yearly_citations_sum_per_work_stats["works_where_sum_yearly_lt_total"] += 1
+            else:
+                yearly_citations_sum_per_work_stats["works_where_sum_yearly_eq_total"] += 1
+
+    # Build sorted history
+    counts_by_year_sum = [
+        {"year": y, "cited_by_count": year_counter[y]} for y in sorted(year_counter.keys())
+    ]
+    yearly_citations_sum = sum(year_counter.values())
+
+    # "Unassigned" are citations from works that lack yearly breakdown (and/or mismatches)
+    unassigned = cited_by_count_sum - yearly_citations_sum
+    if unassigned < 0:
+        # Data inconsistencies can lead to negative; clamp and still report.
+        unassigned = 0
+
+    return {
+        "author_id": full_author_url,
+        "works_scanned": works_scanned,
+        "works_with_yearly_breakdown": works_with_yearly,
+        "works_missing_yearly_breakdown": works_missing_yearly,
+        "cited_by_count_sum": cited_by_count_sum,
+        "counts_by_year_sum": counts_by_year_sum,
+        "yearly_citations_sum": yearly_citations_sum,
+        "unassigned_citations_estimate": unassigned,
+        "consistency": yearly_citations_sum_per_work_stats,
+    }
