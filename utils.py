@@ -774,33 +774,32 @@ def get_author_migration_history(
         },
     }
 
-
-# -------------------------
-# Example usage
-# -------------------------
-if __name__ == "__main__":
-    author_id = "https://openalex.org/A5024763828"  # Bernard Ghanem
-    hist = get_author_migration_history(
-        author_id,
-        min_votes_per_year=3,
-        min_confidence=0.5,
-        carry_forward_if_weak=True,
-        min_streak_years=2,
-    )
-
-    print("Author:", hist["author_id"])
-    print("Works scanned:", hist["works_scanned"])
-    print("\nInstitution segments:")
-    for s in hist["institution_segments"]:
-        print(
-            f"- {s['start_year']}-{s['end_year']}: {s['institution_name']} ({s['institution_id']})"
-        )
-
-    print("\nDetected migration events:")
-    if not hist["migration_events"]:
-        print("- (none found with current thresholds)")
-    else:
-        for e in hist["migration_events"]:
-            print(
-                f"- {e['year']}: {e['from_institution']['name']} -> {e['to_institution']['name']}"
-            )
+# # -------------------------
+# # Example usage
+# # -------------------------
+# if __name__ == "__main__":
+#     author_id = "https://openalex.org/A5024763828"  # Bernard Ghanem
+#     hist = get_author_migration_history(
+#         author_id,
+#         min_votes_per_year=3,
+#         min_confidence=0.5,
+#         carry_forward_if_weak=True,
+#         min_streak_years=2,
+#     )
+#
+#     print("Author:", hist["author_id"])
+#     print("Works scanned:", hist["works_scanned"])
+#     print("\nInstitution segments:")
+#     for s in hist["institution_segments"]:
+#         print(
+#             f"- {s['start_year']}-{s['end_year']}: {s['institution_name']} ({s['institution_id']})"
+#         )
+#
+#     print("\nDetected migration events:")
+#     if not hist["migration_events"]:
+#         print("- (none found with current thresholds)")
+#     else:
+#         for e in hist["migration_events"]:
+#             print(
+#                 f"- {e['year']}: {e['from_institution']['name']} -> {e['to_institution']['name']}"
+#             )
